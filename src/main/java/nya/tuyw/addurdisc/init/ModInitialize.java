@@ -10,12 +10,21 @@ import nya.tuyw.addurdisc.AddurDisc;
 import nya.tuyw.addurdisc.Config.ConfigUtil;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.gagravarr.vorbis.VorbisAudioData;
+import org.gagravarr.vorbis.VorbisFile;
+import org.gagravarr.vorbis.VorbisInfo;
+
 public class ModInitialize {
+    private static final double DEFAULT_DURATION = 1728000;
+
     public static final Path path;
     public static final Path sounds;
     public static final Path models;
@@ -40,6 +49,10 @@ public class ModInitialize {
     public static ArrayList<String> loadedSoundsNames;
     public static ArrayList<Item> addedDiscs;
     public static ArrayList<SoundEvent> loadedSounds;
+
+    // If a duration cannot be calculated, it will not exist on the map,
+    // so a getOrDefault is necessary to handle that
+    public static Map<String, Double> loadedDurations;
     public static InputStream Stream;
 
     private static void initializePackmcmeta() {
@@ -59,6 +72,7 @@ public class ModInitialize {
 
     private static void initializeSounds() {
         loadedSoundsNames = new ArrayList<>();
+        loadedDurations = new HashMap<>();
         File dir = sounds.toFile();
         File[] files = dir.listFiles();
         if (files != null) {
@@ -69,6 +83,14 @@ public class ModInitialize {
                     if (checkFileName(f.getName())){
                         String names = f.getName().substring(0, f.getName().lastIndexOf('.'));
                         loadedSoundsNames.add(names);
+
+                        try (VorbisFile vorbisFile = new VorbisFile(f)) {
+                            loadedDurations.put(names, getDurationInSeconds(vorbisFile));
+                        } catch (IOException e) {
+                            AddurDisc.LOGGER.error("Could not load ogg duration for " + f.getName() + ". Error: " + e.getMessage());
+                        }
+
+
                     }else {
                         AddurDisc.LOGGER.warn(f.getName() + " contains illegal characters. Ignoring.");
                     }
@@ -118,7 +140,8 @@ public class ModInitialize {
         for (SoundEvent soundEvent : loadedSounds){
             ResourceLocation soundlocation = soundEvent.getLocation();
             String name = soundlocation.getPath();
-            Item discitem = new RecordItem(15,soundEvent,new Item.Properties().stacksTo(1).rarity(Rarity.RARE),1728000);
+            int duration = (int)Math.ceil(loadedDurations.getOrDefault(name, DEFAULT_DURATION));
+            Item discitem = new RecordItem(15,soundEvent,new Item.Properties().stacksTo(1).rarity(Rarity.RARE),duration);
             Registry.register(BuiltInRegistries.ITEM,new ResourceLocation(AddurDisc.MODID,"disc_"+name),discitem);
             addedDiscs.add(discitem);
         }
@@ -149,5 +172,25 @@ public class ModInitialize {
         if (f.exists()){
             f.delete();
         }
+    }
+
+    private static double getDurationInSeconds(VorbisFile file) throws IOException {
+        VorbisInfo info = file.getInfo();
+
+        VorbisAudioData data;
+
+        long lastGranule = -1;
+        while((data = file.getNextAudioPacket()) != null){
+            long currentGranule = data.getGranulePosition();
+            if(currentGranule > lastGranule) lastGranule = currentGranule;
+        }
+
+        if(lastGranule > 0){
+            long samples = lastGranule - info.getPreSkip();
+            double sampleRate = info.getSampleRate();
+            return samples / sampleRate;
+        }
+
+        return -1;
     }
 }
